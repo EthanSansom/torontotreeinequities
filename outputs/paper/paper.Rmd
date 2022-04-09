@@ -1,0 +1,805 @@
+---
+title: "The Relationship Between Visible Minority Population, Household Income, and Urban Street Tree Density in Toronto Neighborhoods"
+author: "Ethan Sansom"
+header-includes:
+    - \usepackage{setspace}\doublespacing
+    - \usepackage{float}
+    - \usepackage{rotating}
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  bookdown::pdf_document2:
+    toc: TRUE
+  html_document: default
+abstract: "\\singlespacing Urban trees are associated with significant ecological, public health, and economic benefits in cities across North America. These benefits, however, are inequitibly afforded to racialized communities and low income communities, which have disproportionaly little access to urban forestry. This paper utilizes a spatial autoregressive model of Toronto's 140 neighbourhoods to investigate the correlation between neighbourhood median household income, visible minority population, and street tree density within the city. Several visible minority groups, namely Chinese, South Asian, and Filipino populations, are shown to be strongly and significantly negatively correlated with neighbourhood street tree density."
+thanks: "Code and data are available at: https://github.com/EthanSansom/torontotreeinequities"
+bibliography: references.bib
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+# Load Packages ----------------------------------------------------------------
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(sf)           # For graphing maps using Polygon objects
+library(scattermore)  # For graphing very large numbers of points
+library(here)         # For referencing files in directory
+library(kableExtra)   # For formatting tables
+library(bookdown)     # For cross referencing
+library(modelsummary) # For regression models
+library(gridExtra)    # For creating plots
+library(performance)  # For checking model assumptions
+library(see)          # For graphing model assumptions
+library(gridExtra)    # For arranging graphs
+library(cowplot)      # For formatting graphs
+
+# For spatial auto-regression
+library(spdep)        # For spatial auto-regressive modelling
+library(RColorBrewer) # For nicer color schemes
+library(spatialreg)   # For spatial auto-regressive modelling
+
+# Load Data --------------------------------------------------------------------
+neighbourhood_demo <-
+  read_csv(here("inputs/data/proportional_neighbourhood_census_data.csv"))
+neighbourhood_map <- 
+  read_rds(here("inputs/data/clean_neighbourhood_map_data.rds"))
+neighbourhood_trees <- 
+  read_csv(here("inputs/data/clean_tree_data.csv"))
+neighbourhood_income <- 
+  read_csv(here("inputs/data/neighbourhood_income_2016.csv")) |>
+  mutate(median_after_tax_household_income = median_house_income_after_tax) |>
+  select(-c(neighbourhood, median_house_income_after_tax))
+
+# Order observations by neighbourhood code
+neighbourhood_map <-
+  neighbourhood_map |>
+  arrange(code)
+neighbourhood_demo <-
+  neighbourhood_demo |>
+  arrange(code)
+```
+
+
+```{r assigntreeneighbourhoods, include = FALSE}
+#  Assign Trees to a Neighbourhood by Location ---------------------------------
+
+# Create a neighbourhood trees to shape file, this code with help from:
+# https://gis.stackexchange.com/questions/282750/identify-polygon-containing-point-with-r-sf-package
+neighbourhood_trees_sf <-
+  st_as_sf(neighbourhood_trees, coords = c('longitude', 'latitude'), crs = st_crs(neighbourhood_map))
+
+# Create variable neighbourhood, that indicates which neighbourhood a tree is in
+neighbourhood_trees_sf <- 
+  neighbourhood_trees_sf |>
+  mutate(
+    neighbourhood = as.integer(
+      st_intersects(neighbourhood_trees_sf$geometry,neighbourhood_map$geometry)
+      )
+  )
+
+# Add neighbourhood information to neighbourhood_trees
+neighbourhood_trees <-
+  neighbourhood_trees |>
+  left_join(
+    y = neighbourhood_trees_sf |> select(tree_id, neighbourhood),
+    by = "tree_id"
+  )
+
+# Remove extra table from memory
+remove(neighbourhood_trees_sf)
+```
+
+\newpage
+
+# Introduction
+
+Urban trees, located along suburban avenues, city parks, and downtown cores offer extensive ecological, public health, and economic benefits to city residents. City trees have been shown to mitigate storm water runoff, relieving urban water management systems from overflowing, decreasing costs associated with structural flooding [@Greene]. The shade and windbreak provided by trees adjacent to homes decrease the heating and cooling energy costs incurred by Toronto residents, reducing carbon emissions and household expenditures [@urbanforest]. Tree canopies in Toronto and elsewhere have been shown to significantly improve urban air quality by sequestering carbon dioxide and other pollutants from the atmosphere [@urbanforest; @Greene]. In a study of extreme heat events in Toronto, authors @Graham found that increased community tree coverage significantly reduced the incidence of heat related ambulance calls and heat related deaths. These results, as well as other positive health outcomes associated with urban tree coverage, have been well documented in other cities as well [@Cameron; @Landry].
+
+In many studies and in various regions across North America, the numerous benefits of the urban forest have been demonstrated to be disproportionately afforded to non-radicalized and wealthier communities [@metarace; @Landry; @Greene]. In Toronto, urban tree coverage is negatively correlated with community immigrant population as well as language diversity, and is positively correlated with median family income and property value [@Landry]. Lower income populations have comparatively fewer tree coverage and have greater exposure to environmental hazards, such as pollutants or extreme heat events [@Cameron]. In an analysis of 40 studies measuring the relationship between race and urban tree coverage, authors @metarace reaffirm that urban forestry is negatively associated with increased minority populations. Many of the studies analyzed, however, report only correlations or use bivariate OLS models, which fail to account for variation in minority populations and urban tree coverage which are simultaneously explained by other factors, such as income [@metarace]. Fewer studies still, account for the spatial relationships between the geographical areas, which mediates the relationship between race and tree coverage [@metarace].
+
+Incorporating the findings of @metarace, this paper investigates the correlation between Toronto neighbourhoods’ income, visible minority population, and street tree density. Using the Toronto's 140 neighbourhoods as units of observation, a set of ordinary least squares and spatial autoregressive multiple linear regression models are estimated with street trees per square kilometer as the outcome variable, and with median household income and neighbourhood visible minority prevalence as the independent variables of interest. By controlling for both income and spatial autocorrelation between neighborhoods, we aim to more precisely estimate the relationship between visible minority population and urban tree coverage. It is shown that the presence of several visible minority populations, namely Chinese, South Asian, Filipino, and Southeast Asian, are strongly and significantly negatively correlated with neighbourhood street tree density in Toronto (see Table \@ref(tab:olsreg)). As shown in Figure \@ref(tab:autoreg), these results remain significant while controlling for both neighbourhood median household income and spatial dependence between neighbourhoods. Such results suggest that Toronto’s street trees are not allocated equally across the city’s neighbourhoods and further, that these inequities are in part related to communities’ racial profile.
+
+# Conceptual Framework
+
+## Income
+
+Many studies have demonstrated that community income and urban tree coverage are related [@metaincome]. In Toronto specifically, household income and urban forest coverage have been shown to be positively correlated [@Landry; @Greene]. Toronto's street trees are planted by the municipal government, often at the request of individual homeowners, businesses, and community groups which can apply for street trees to be planted on or near their premises [@Greenbelt; @urbanforest]. Home-owners, far more so than renters, tend to trees on their property and are also typically wealthier than renters, causing a positive association between street tree planting and wealthier residences [@Greenbelt]. The presence of street trees has been shown to increase the value of nearby homes, preventing lower income residents from accessing areas with greater street tree density [@urbanforest]. Researchers have observed a positive relationship between Toronto citizens participation in tree planting programs and higher levels of education [@Greene].
+
+Conversely, increasing urban forestry, even in ways which directly target lower income communities directly, can create ecological gentrification [@metaincome]. An increase in urban amenities, such as street trees and other urban foliage, has been shown to lead to increased interest from property buyers and investors [@metaincome; @urbanforest]. The transformation of properties by investors and wealthier residents then displace lower-income residents who can no longer afford to live in their neighborhood, thereby removing lower income households from areas of greater street tree density [@metaincome]. To understand the potential differential effects of very low household income on proximity to street trees, as opposed to middle and upper class incomes, this paper considers both the effects of neighborhood median household income and the percent of households which are classified as low income earners on neighborhood street tree density.
+
+
+## Visible Minority Population
+
+Many of the same factors which relate urban tree coverage and income, also relate urban tree coverage and race. Ecological gentrification likewise adversely effects minority populations, which are disproportionately targeted by neighborhood gentrification [@Parish; @metarace]. Further, Toronto's home-owners, which tend to have greater access to street trees and which plant street trees more frequently, tend to be white [@Greenbelt]. As urban trees, income, and race are interrelated, it is difficult to interpret the effect of either income or race on urban forest cover directly. Apart from income, however, studies have shown that municipal governments allocate urban tree planting services inequitably, at the expense of specific minority communities [@Landry]. Moreover, Toronto's local tree planting groups, and subsequently the communities in which trees tend to be planted, are primarily white, and lack minority participants [@Greenbelt].
+
+
+# Model
+
+## Ordinary Least Squares (OLS)
+
+To model the effect of neighbourhood income on neighbourhood street tree density, we estimate Specification \@ref(eq:ols1), we preform a simple OLS regression of neighbourhood street tree density, $treedensity$, on neighbourhood median household after-tax income in thousands of dollars, $income$.
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \epsilon_i (\#eq:ols1)
+\end{equation}
+
+The coefficient $\beta_1$ can be interpreted as the change in the number of trees per square kilometer within a neighbourhood which results from a \$1000 increase in the neighborhood's median household after-tax income. Specification \@ref(eq:ols2) adds a vector of variables $visibleminority$, each of which represents the percent of a neighborhood's population which identifies as a given visible minority identified in the 2016 Canadian Census [@Census]. These minority groups are Black, Chinese, Japanese, Arab, South Asian, Filipino, Southeast Asian, West Asian, and Korean, with an option for multiple visible minorities or other visible minority also available on the census survey [@Census].
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \alpha visibleminority_i + \epsilon_i (\#eq:ols2)
+\end{equation}
+
+To prevent multicollinearity^[The set of populations identified in \emph{visibleminority} and the population which is not a visible minority form a partition of each neighborhood's total population. Thus, any one of the variables in \emph{visibleminority} is determined by a linear combination of the remaining variables and the population percent which is not a visible minority.], the percentage of the neighborhood which does not identify as a visible minority is omitted from the model and is used as a reference group. The coefficient estimate $\alpha$ on a visible minority population variable, for example the percentage of a neighborhood which identifies as Japanese, is thus interpreted as the change in a neighborhood's street trees per kilometer which results from a percentage point increase in the neighborhoods Japanese population, holding all other variables fixed. In particular, this coefficient estimates the effect of simultaneously increasing the Japanese population and decreasing the non-visible minority population of a neighborhood, as the percentage of all other visible minority populations is held fixed. Finally, Specification \@ref(eq:ols3) adds a vector of covariates \emph{demographics} to the model, which includes neighborhood population per square kilometer, average household size^[The average number of individuals living in a household.], percent of households with only one occupant, and percent of households categorized as low income by Statistics Canada [@Census].
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \alpha visibleminority_i + \gamma demographics_i + \epsilon_i (\#eq:ols3)
+\end{equation}
+
+Note that Specification \@ref(eq:ols3), implies that previous specifications \@ref(eq:ols1) and \@ref(eq:ols2) will very likely produce biased estimates due to omitted variable bias. For instance, Table \@ref(tab:corr) shows that population density, omitted from previous specifications, is correlated with both median household income and the outcome variable, \emph{treedensity}. The absence of population density in these specifications, then, contradicts the zero conditional mean assumption and will lead to biased estimates of the effect of household income on street tree density.
+
+Graphically, Specification \@ref(eq:ols3) appears to satisfy the OLS multiple linear regression assumptions of linearity, zero conditional mean, homoskedasticity, and normality (see Figure \@ref(fig:olsperformance)). In particular, the model residuals appear normally distributed, as indicated by a Normal Quantile-Quantile plot and Density plot of the residuals. Plotting the model fitted values against the model residuals and square root of the standardized residuals respectively, it appears that the residuals have constant mean of 0 and constant variance, indicating that zero conditional mean and homoskedasticity is satisfied. As noted by @metarace, Specification \@ref(eq:ols3) is very likely subject to omitted variable bias resulting from the omission of spatial dependence from the model. Demographers and geographers have argued that correcting for spatial autocorrelation is key when studied the relationship between demographic characteristics, such as race and income, and urban tree coverage [@metaincome]. Neighborhood boundaries tend to be defined along political or urban zoning boundaries, not differences in demographics or forestry [@metaincome]. Failing to account for spatial autocorrelation, the systematic similarity of both urban tree coverage and social demographics exhibited by adjacent neighborhoods, tends to increase both the magnitude and significance levels when estimating the impact of community race on community tree coverage [@metarace; @metaincome].
+
+## Spatial Autoregression
+
+Two potential forms of spatial autocorrelation that the model may take, as described by @Anselin, are the spatial lag and spatial error models. The spatial lag model assumes the functional form of an arbitrary outcome variable $y$ shown below
+\begin{equation}
+y_i = \beta X_i + \rho W y + \epsilon_i,
+\end{equation}
+where $W$ is a matrix of spatial weights, indicating the relative spatial positions of observations $i$ to $n$, assuming that each observation is a geographical unit. In this case, $X$ is a vector of independent variables and $Wy = \sum_{j=1}^n w_{ij} y_j$, is a spatially weighted sum of outcome observations $y_1, y_2, ..., y_n$. The spatial error model takes the form
+\begin{equation}
+y_i = \beta X_i + \epsilon_i, \epsilon_i = \gamma W \epsilon + u_i,
+\end{equation}
+which implies that the errors, rather than the outcome variable, are spatially autocorrelated. In this case the error term $\epsilon_i$ is a function of unknown error $u_i$ and a spatially weighted sum of error terms $W \epsilon = \sum_{j=1}^n w_{ij} \epsilon_j$.
+
+To test for the presence of spatial autocorrelation in the model, we conduct Lagrange Multiplier Tests for both spatial lag and spatial error, with a null hypothesis of zero spatial autocorrelation [@Anselin]. Table \@ref(tab:lmtest) shows that both the standard Lagrange Multiplier Tests for spatial lag spatial error are highly significant ($p << 0.01$). To differentiate between the potential spatial dependencies, we use an alternate form of the Lagrange Multiplier Tests which are robust to the presence of the other type of spatial dependence. The presence of spatial error dependence is not significantly different from zero ($p > 0.1$), while the test for spatial lag dependence is significant at the five percent level (see Table \@ref(tab:lmtest)). To account for the spatial lag dependency evident between neighbourhoods, Specification \@ref(eq:ols1), Specification \@ref(eq:ols2), and Specification \@ref(eq:ols3) are re-estimated using the spatial autoregressive lag model described by @Anselin. These specifications are shown below:
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \rho W treedensity + \epsilon_i, (\#eq:auto1)
+\end{equation}
+
+\vspace{-5mm}
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \alpha visibleminority_i + \rho W treedensity + \epsilon_i, (\#eq:auto2)
+\end{equation}
+
+\vspace{-5mm}
+
+\begin{equation}
+treedensity_i = \beta_0 + \beta_1 income_i + \alpha visibleminority_i + \gamma demographics_i + \rho W treedensity + \epsilon_i. (\#eq:auto3)
+\end{equation}
+
+Unlike the prior specifications, Specification \@ref(eq:auto1), Specification \@ref(eq:auto2), and Specification \@ref(eq:auto3), cannot be estimated by OLS as the functional form of $treedensity_i$ is determined simultaneously for all observations $i = 1, 2, ... 140$. To resolve this, we estimate the spatial lag specifications using maximum likelihood estimation (MLE). Consequently, we must assume that these specifications satisfy the full set of Gauss-Markov assumptions and in particular, that the error terms are normally distributed ($\epsilon \sim N(0, \sigma^2)$). By assumption, Specification \@ref(eq:auto1) and Specification \@ref(eq:auto2) omit variables from the functional form of $treedensity$ and, as discussed previously, will thus fail to meet the zero conditional mean assumption and suffer from omitted variables bias. Graphically, Specification \@ref(eq:auto3) appears to meet the assumption of normally distributed errors (see Density and Normal Q-Q plots in Figure \@ref(fig:autoperformance)). While the spatial lag model accounts for one form of spatial autocorrelation, it is possible that $treedensity$ contains spatially autocorrelated errors and more complicated methods may be necessary to correctly specify the model [@Anselin; @Pace].
+
+# Data
+
+The data used in this paper comes from two primary sources, the 2016 Canadian Census and the Urban Forestry Service's registry of Toronto's street trees [@Census; @treedata]. Both the census data and street tree data are accessed via Toronto's Open Data portal, a repository of publicly available datasets [@profiles; @treedata]. Additionally, the Open Data portal is used to access geographic boundary data which define Toronto's 140 neighborhoods [@maps]. Key variables included in the census data are the median household after-tax income, percentage of low income households, population density, average household size, percentage of households with one occupant, and the percentage populations of each visible minority group described in Model Section \@ref(model) for all 140 neighbourhoods in Toronto. Median Household Income, rather than average household income, is chosen as the measure of central tendency because of its robustness to outliers, particularly to the presence of extremely wealthy households. The street tree dataset provides the location^[Tree locations are in Longitude and Latitude.] of every street tree in Toronto inventoried by the Urban Forestry Service (see Figure \@ref(fig:treepoints) for these locations). For this analysis, each street tree is assigned to a neighborhood, using the street tree's location and the neighborhood map boundaries. The number of street trees per each neighbourhood is divided by the area of the neighborhood's geographical boundary to obtain the street tree density per neighbourhood.
+
+Table \@ref(tab:summary) describes the means and standard deviations of all variables included in this analysis. The mean street tree density observed is 1257.59, with relatively large standard deviation of 476.86 across neighborhoods. Median household after-tax income is also highly variable, with mean 70921.30 and standard deviation 24131.73. Approximately 53
+% of Toronto's population does identify as a visible minority (SD = 22\%), followed by 11% which identify as South Asian (SD = 11\%), 10\% which identify as Chinese(SD = 13\%), 9\% which identify as Black (SD = 8\%), and 5\% which identify as Filipino (SD = 5\%). The remaining visible minority populations, namely Japanese, Arab, Southeast Asian, West Asian, Korean, and those belonging to multiple visible minorities or other visible minorities not listed, account for a very low percentage of the city's population. Moreover, there is very little variation in these populations (SD < 3%) between neighborhoods. Consequently, when estimating the models in Section \@ref(model), the estimated effect sizes of these variables will be subject to high standard errors, as low variance in the independent variable increases the variance of linear regression estimates. Figure \@ref(fig:minmap) and Figure \@ref(fig:treemap) respectively depict the non-visible minority population percentage and street tree density per square kilometer of Toronto's 140 neighborhood's. Both street tree density and non-visible minority population is greatest towards the center of the city, in the downtown region. Towards the suburbs, particularly in the North-East Scarborough region^[Visit url https://www.toronto.ca/city-government/data-research-maps/neighbourhoods-communities/neighbourhood-profiles/ for a labelled map of Toronto's neighborhoods.], both street tree density and non-visible minority population decreases.
+
+This paper is significantly limited by the time periods of the street trees and neighborhood demographic data sets. The street tree data is continuously updated as the Urban Forestry Service plants, inventories, or cares for new trees, and was last refreshed April 4, 2022 as of the writing of this paper [@treedata]. The remaining demographic data used in this analysis is from the 2016 Canadian Census and thus lags the outcome variable street tree density by around six years [@Census]. Consequently, models in Section \@ref(model) estimate the six year lagged impact of neighborhood income, visible minority population, and other demographic variables on neighborhood street tree density, which presents obvious limitations for estimating the cross-sectional correlation between these factors. The analysis presented here can, however, readily and easily be extended to include the 2021 Canadian Census data, once it is publicly available at the neighborhood level.
+
+# Results
+
+## Ordinary Least Squares (OLS)
+
+Table \@ref(tab:olsreg) displays the full set of regression results for models \@ref(eq:ols1), \@ref(eq:ols2), and \@ref(eq:ols3). The simple OLS regression specification \@ref(eq:ols1) estimates a significant ($p < 0.01$) coefficient of 5.881 on median household after-tax income, measured in \$1000's. This effect size implies that an increase in neighborhood median household income is associated with an increase of 6 tree per square kilometer. While highly statistically significant, this effect is practically minute when compared with the mean street tree density of 1257.59 (SD = 476.86). In Specification \@ref(eq:ols2), which includes covariates for visible minority populations, the effect of median household income is both small and negative, -0.606, and is no longer statistically significant. This implies that the effect of median household income on street tree density is partially explained by neighborhood visible minority population, contrary to studies in other contexts which have reported a mediation of income on racial effects in the opposite direction [@metaincome]. 
+
+Finally, in Specification \@ref(eq:ols3), which controls for both population density and median household income, we observe significant estimated effects of several minority populations, specifically Chinese, South Asian, Filipino, and Southeast Asian. The estimated coefficients on the covariates Chinese, South Asian, Filipino, and Southeast Asian are -799.566, -2931.519, -2429.585, and -5114.149 respectively. All four visible minority groups are associated with a decrease in street trees per square kilometer. The estimated effects, however, are much larger than those which can actually be observed. For instance, the coefficient of -5114.149 on the variable for Southeast Asian population percentage implies that a one percentage point increase in a neighborhood's Southeast Asian population corresponds to 5114.149 fewer neighborhood street trees per square kilometer. Given that the minimum and maximum street tree densities observed are just 317.43 and 2450.18 respectively, this effect size is empirically unrealistic. As noted in the Model Section \@ref(model), Toronto's visible minority population is relatively small and does not vary significantly across neighborhoods. Thus, between neighborhood visible minority population increases of even one percentage point are infrequent, which produces unrealistic effect sizes in the model. Notably, all three of the visible minority populations which are estimated to have a significant effect on street tree density at the 5\% level, Chinese, South Asian, and Filipino, are among the largest visible minority populations in Toronto. Estimates for the effect of all visible minority groups, with the exception of other visible minority groups not specified in the census, Korean, Japanese, and West Asian have large negative effect estimates on street tree density.
+
+## Spatial Autoregression
+
+Table \@ref(tab:autoreg) displays the full set of regression results for spatial lag models \@ref(eq:auto1), \@ref(eq:auto2), and \@ref(eq:auto3). The results of all three models, particularly the significance of estimates, are not strongly effected by controlling for spatial autocorrelation. In Specification \@ref(eq:auto1), which re-estimates the simple linear model in \@ref(eq:auto1) with spatially lagged outcome variables, the effect of median household after-tax income on street tree density is still statistically significance. As before the significance of median household income disappears once visible minority populations are added to the spatial lag models. Specification \@ref(eq:auto3), which includes the full set of population controls, median household income, and visible minority population, estimates significant and negative effects of Chinese, South Asian, and Filipino populations on neighborhood street tree density.
+
+Because of the simultaneous effect of covariates in individual neighborhoods, as well as their adjacent neighborhoods, on the outcome street tree density which is implied by the spatial lag model, the coefficients reported in Table \@ref(tab:autoreg) cannot be interpreted directly. We instead refer to the estimation of direct covariate impacts suggested by @Pace in Table \@ref(tab:impacts). For each covariate $X$, the direct effect is given by
+
+\begin{equation}
+\frac{1}{140} \times \sum_{i = 1}^{140} \frac{\delta E[treedensity_i]}{\delta X_i},
+\end{equation}
+
+the average partial effect of covariate $X$ on street tree density [@Pace]. The direct impacts of Chinese, South Asian, and Filipino populations on neighborhood street tree density are -571.236, -2158.224, and -1800.389, which are similar to those reported in the previous regression models although with smaller magnitude in every case.
+
+
+## Limitations
+
+The spatial autoregressive models used in this paper incorporate only spatial lag dependence and do not account for the potential presence of spatially autocorrelated errors. Table \@ref(tab:lmtest) offers indication that neighborhood errors are potentially autocorrelated, and thus the estimates obtained by omitting this dependence will be inconsistent [@Anselin]. Further, the spatial autoregressive models estimated in this analysis rely on asymptotically estimated standard errors, which require large sample sizes to be reliable. Thus, the limited number of observations (N = 140) used in this paper may infringe on the validity of the reported significance of regression estimates. As noted in Section \@ref(data), these effect estimates should also be interpreted as lagged effect on neighborhood street tree density. Changes in demographics and tree planting in the years between the 2016 Census and 2022 record of street tree locations may have significant impacts on the relationship between income, visible minority populations, and street tree density which are not described here.
+
+Environmental factors are omitted from all models considered in this paper, and are thus cause for concern when interpreting estimates obtained from this analysis. Numerous studies have demonstrated that urban trees differ in their quality and prevalence in association with environmental factors, such as available sunlight and precipitation [@metaincome; @metarace]. Although street trees are less vulnerable to environmental conditions than other urban foliage, as they are actively maintained by Urban Forestry workers, municipal governments and other tree planting organizations are likely to plant trees in areas with environmental supports, where they need little support to survive and are thus less costly to maintain. If income or visible minority status is related to preferences for, or accessibility to, specific environments which allow trees to thrive, then the estimates obtained for these variables will be biased.
+
+# Conclusion
+
+Urban trees deliver substantial ecological, public health, and economic benefits to cities and their residents. As increasing numbers of cities across North America begin to implement large-scale urban tree planting initiatives, it is essential that the equitable distribution urban forests across communities of various incomes and racial or ethnic backgrounds be considered alongside the sustainability aspect of tree planting [@Landry; @metarace; @Cameron]. Failure on the part of municipal governments to consider the current inequities present in urban infrastructure, and the potential adverse consequences of ecological gentrification, will exacerbate already large disparities between the wealthy and the poor, as well as those between majority and minority populations.
+
+As Toronto endeavours to substantially increase the footprint of its large urban tree canopy, it is thus essential to consider the current distribution of the city's street trees and identify inequities present in the prior allocation of street trees. The results of this paper show that variation in urban street tree density across Toronto's neighborhoods is associated with neighborhood visible minority population and further, that in many visible minority communities have fewer street trees relative to majority non-visible minority communities. These findings add to the literature suggesting that Toronto's urban forestry resources are distributed inequitably and can serve as the basis for future analysis into the structural factors which determine urban street tree allocation in Toronto.
+
+\newpage
+
+# Appendix
+
+```{r treepoints, fig.cap = "Geographical Distribution of Toronto's Street Trees",echo=FALSE, message=FALSE, warning=FALSE}
+# Plot all Street Trees --------------------------------------------------------
+neighbourhood_trees |>
+  ggplot() +
+  
+  # Plot the borders of each ward
+  geom_sf(data = neighbourhood_map$geometry, fill = "white", colour = "#3aaf85") +
+  
+  # Plot the location of each tree
+  geom_scattermore(
+    aes(x = longitude, y = latitude),
+    pointsize = 0,
+    pixels = c(2000, 2000),
+    colour = "#3aaf85"
+    ) +
+  
+  # Label the graph
+  labs(
+    title = "",
+    x = "Longitude",
+    y = "Latitude"
+    ) +
+  
+  # Adjust theme
+  see::theme_lucid()
+```
+
+
+```{r combinedata, include =FALSE}
+# Create number of trees per neighbourhood data
+trees_per_neighbourhood <-
+  neighbourhood_trees |>
+  group_by(neighbourhood) |>
+  summarise(number_trees = n()) |>
+  rename("code" = neighbourhood)
+
+# Add trees per neighbourhood to neighbourhood_map data
+neighbourhood_map <-
+  neighbourhood_map |>
+  left_join(
+    y = trees_per_neighbourhood,
+    by = "code"
+  )
+  
+# Create trees per square kilometer variable
+neighbourhood_map <- neighbourhood_map |> mutate(trees_per_sq_km = number_trees / area_sq_km)
+
+# Add census data on neighbourhood demographics to neighbourhood_map
+neighbourhood_map <-
+  neighbourhood_map |>
+  left_join(
+    y = neighbourhood_demo,
+    by = "code"
+  )
+
+# Add income measure to neighbourhood_map
+neighbourhood_map <-
+  neighbourhood_map |>
+  left_join(y = neighbourhood_income, by = "code")
+```
+
+\newpage
+
+```{r, include = FALSE}
+#  Create Plots to Compare Income, Minority Population, Trees, Population Density
+non_min_plot <-
+  neighbourhood_map |>
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = vm_not_a_visible_minority)) +
+  scale_fill_viridis_c(option = "viridis") +
+  labs(
+    fill = "Non-Visible\nMinority Population (%)",
+    title = "",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  see::theme_lucid()
+
+income_plot <-
+  neighbourhood_map |>
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = median_after_tax_household_income)) +
+  scale_fill_viridis_c(option = "viridis") +
+  labs(
+    fill = "Median\nHousehold Income",
+    title = "Toronto Median Household Income by Neighborhood",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  see::theme_lucid()
+
+tree_plot <-
+  neighbourhood_map |>
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = trees_per_sq_km)) +
+  scale_fill_viridis_c(option = "viridis") +
+  labs(
+    fill = "Street Trees per\nSquare Kilometer",
+    title = "",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  see::theme_lucid()
+
+pop_density_plot <-
+  neighbourhood_map |>
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = population_density_per_square_kilometre)) +
+  scale_fill_viridis_c(option = "viridis") +
+  labs(
+    fill = "Population per\nSquare Kilometer",
+    title = "Toronto Population Density by Neighborhood",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  see::theme_lucid()
+```
+
+```{r minmap, fig.cap = "Toronto's Street Tree Density by Neighborhood", echo = FALSE, out.width="80%"}
+tree_plot
+```
+
+\vspace{15mm}
+
+```{r treemap, fig.cap = "Toronto's Non-Visible Minority Population by Neighborhood", echo = FALSE, out.width="85%"}
+non_min_plot
+```
+
+\newpage
+
+```{r summary, fig.cap = "Variable Summary", echo = FALSE}
+# Create a Table of Summary Statistics -----------------------------------------
+summary_table <- 
+  datasummary(
+    formula = 
+    trees_per_sq_km +
+    median_after_tax_household_income +
+    average_household_size +
+    population_density_per_square_kilometre +
+    persons_living_alone_per_cent +
+    prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent +
+    vm_black +
+    vm_chinese + 
+    vm_japanese +
+    vm_arab +
+    vm_south_asian +
+    vm_filipino +
+    vm_southeast_asian +
+    vm_west_asian +
+    vm_korean +
+    vm_multiple_visible_minorities + 
+    vm_visible_minority_n_i_e +
+    vm_not_a_visible_minority ~ mean + sd + min + max,
+  data = neighbourhood_map,
+  output = "data.frame"
+)
+
+# Rename the variables for display
+summary_table[1] <- 
+  c(
+    "Trees per Square Kilometer",
+    "Median Household Income", 
+    "Average Household Size",
+    "Population per Square Kilometer",
+    "Persons Living Alone (%)",
+    "Low Income (%)",
+    "Black",
+    "Chinese",
+    "Japanese",
+    "Arab",
+    "South Asian",
+    "Filipino",
+    "Southeast Asian",
+    "West Asian",
+    "Korean",
+    "Multiple Visible Minorities",
+    "Other Visible Minority",
+    "Not a Visible Minority"
+  )
+
+# Display the table
+summary_table |>
+  as_tibble() |>
+  kable(
+    col.names = c("Variable", "Mean", "Std. Dev.", "Min", "Max"), 
+    booktabs = T, 
+    linesep = "", 
+    caption = "Variable Summary"
+    ) |>
+  kable_styling(font_size = 10)
+```
+
+\newpage
+
+```{r corr, fig.cap = "Correlation of Tree Density, Income, Non-Visible Minority Population, and Population Controls", echo = FALSE, escape = FALSE}
+# Create correlation table
+datasummary_correlation(
+  title = "Correlation of Tree Density, Income, Non-Visible Minority Population, and Population Controls",
+  data = as_tibble(neighbourhood_map) |> 
+    select(
+      trees_per_sq_km,
+      median_after_tax_household_income,
+      average_household_size,
+      population_density_per_square_kilometre,
+      persons_living_alone_per_cent,
+      prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent,
+      vm_not_a_visible_minority
+      ) |>
+    
+    # Rename variables for display
+    rename(
+      "Street Tree Density" = trees_per_sq_km,
+      "Median Household Income" = median_after_tax_household_income, 
+      "Avg. Household Size" = average_household_size,
+      "Pop. Density" = population_density_per_square_kilometre,
+      "Living Alone (%)" = persons_living_alone_per_cent,
+      "Low Income (%)" = prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent,
+      "Non-Visible Minority (%)" = vm_not_a_visible_minority
+    )
+  ) |>
+  
+  # Flip the table sideways
+  kableExtra::landscape() |>
+  kable_styling(font_size = 8)
+```
+
+\newpage
+
+```{r olsreg, fig.cap = "Ordinary Least Squares Regression Results", echo= FALSE, fig.pos='h'}
+# Create table of regression variables
+neighbourhood_reg <-
+  neighbourhood_map |>
+  as_tibble() |>
+    select(
+      -c(
+        neighbourhood,
+        geometry,
+        area_sq_km,
+        number_trees,
+        population016,
+        land_area_in_square_kilometres,
+        vm_not_a_visible_minority,         # Comparison group for visible minority status  
+        vm_min_total,
+        starts_with("in_"),
+        starts_with("housing"),            # Note: decided to omit housing type from the model
+        starts_with("x")                   # Note: decided to omit housing age from the model
+        )
+      ) |>
+  mutate(median_after_tax_household_income = median_after_tax_household_income/1000)
+
+# Create a list of regression models
+models = list(
+  
+  "Income" = lm(
+    formula = trees_per_sq_km ~ median_after_tax_household_income, 
+    data = neighbourhood_reg
+    ),
+  
+  "Income and Minority Status" = lm(
+    formula = trees_per_sq_km ~ ., 
+    data = neighbourhood_reg |> 
+      select(starts_with("vm"), trees_per_sq_km, median_after_tax_household_income)
+    ),
+  
+  "Full Model" = lm(
+    formula = trees_per_sq_km ~ . - code, 
+    data = neighbourhood_reg
+    )
+)
+
+coef_map <-
+  c(
+    "median_after_tax_household_income" = "Median Household Income",
+    "average_household_size" = "Average Household Size",
+    "population_density_per_square_kilometre" = "Population Density",
+    "persons_living_alone_per_cent" = "Persons Living Alone (%)",
+    "prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent" =
+      "Low Income (%)",
+    "vm_black" = "Black",
+    "vm_chinese" = "Chinese",
+    "vm_japanese" = "Japanese",
+    "vm_arab" = "Arab",
+    "vm_south_asian" = "South Asian",
+    "vm_filipino" = "Filipino",
+    "vm_southeast_asian" = "Southest Asian",
+    "vm_west_asian" = "West Asian",
+    "vm_korean" = "Korean",
+    "vm_multiple_visible_minorities" = "Multiple Visible Minorities",
+    "vm_visible_minority_n_i_e" = "Other Visible Minority"
+  )
+
+# Create Panels for the regression table
+panel_rows <- tribble(
+  ~term, ~income_and_controls, ~income_and_minority, ~all_controls,
+  "\\bf{Demographic Controls}", "", "", "",
+  "", "", "", "",
+  "\\bf{Visible Minority Population (\\%)}", "", "", "",
+  "", "", "", ""
+)
+attr(panel_rows, 'position') <- c(1, 2, 13, 14)
+
+# Create notes for the regression table
+notes <- c("Note: Median Household Income is measured in thousands of dollars. Population density is measured in neighbourhood population per square kilometer. The reference group for the percent population in each visible minority group is the percent of the population that does not identify as a visible minority. Coefficients on variables in Panel B represent the effect of the given visible minority population increasing and the non-visible minority population neccisarily falling (all other visible minority populations remaining fixed). Estimate standard errors appear in parentheses.", "*p<0.1; **p<0.05: ***p<0.01.")
+
+# Create regression table
+modelsummary(models,
+             fmt = "%.3f",
+             estimate="{estimate}{stars}",
+             statistic = "({std.error})",
+             coef_map = coef_map,
+             gof_omit = 'dat$|Std. Errors|FE|Deviance|AIC|BIC|Log.Lik',
+             stars =  c('*' = .1, '**' = .05,'***' = 0.01),
+             add_rows = panel_rows,
+             notes = notes,
+             threeparttable = TRUE,
+             title = "Ordinary Least Squares Regression Results"
+             ) |>
+  # Set Table Width
+  column_spec(1, width = "20em") |>
+  column_spec(2:4, width = "7em") |>
+  # Set Font Size
+  kable_styling(font_size = 8)
+```
+
+\newpage
+
+```{r olsperformance, fig.cap = "Multiple Linear Regression Assumptions of OLS Specification (3)", echo = FALSE, fig.pos='h'}
+# Check the MLR Assumptions of the Full OLS Specification (3)
+performance::check_model(models[[3]], check = c("qq", "normality", "linearity", "homogeneity"))
+```
+
+\newpage
+
+```{r spatialweights, include = FALSE}
+# Get the spatial weight matrix for spatial auto-regression
+adjacency_list <- poly2nb(neighbourhood_map, queen=TRUE)
+spatial_weights <- nb2listw(adjacency_list, style="W", zero.policy=TRUE)
+```
+
+
+```{r lmtest, echo = FALSE, fig.cap = "Lagrange Multiplier Test for Spatial Autocorrelation in Specification (3)"}
+# Test for Spatial Dependence --------------------------------------------------
+full_model_ols <- lm(formula = trees_per_sq_km ~ . - code, data = neighbourhood_reg)
+
+# Run Lagrange Multiplier Tests for Spatial Autocorrelation
+LM <- lm.LMtests(full_model_ols, spatial_weights, test="all")
+
+lm_lag <- LM$LMlag
+lm_error <- LM$LMerr
+lmr_lag <- LM$RLMlag
+lmr_error <- LM$RLMerr
+
+lm_test <-
+  tibble(
+    `Lagrange Multiplier Test Type` = c("Spatial Lag", "Spatial Error", "Robust Spatial Lag", "Robust Spatial Error"),
+    `Test Statistic` = c(lm_lag$statistic, lm_error$statistic, lmr_lag$statistic, lmr_error$statistic),
+    `p-value` = c(lm_lag$p.value, lm_error$p.value, lmr_lag$p.value, lmr_error$p.value)
+  )
+
+lm_test |>
+  kable(booktabs = T, linesep = "", caption = "Lagrange Multiplier Test for Spatial Autocorrelation in Specification (3)") |>
+  kable_styling(font_size = 10) |>
+  footnote("Robust Spatial Lag and Robust Spatial Error tests are robust to the other type of spatial depandance.")
+```
+
+
+```{r spatialmap, echo = FALSE, fig.cap = "Neighborhood Adjacency and Relative Distance Graph", fig.dim = c(8, 6)}
+# Plot the adjacent regions and distances between regions
+plot(neighbourhood_map$geometry, col = "white")
+plot(spatial_weights, coords=coordinates(as_Spatial(neighbourhood_map)), add=T, col="#3aaf85", lwd=1)
+title(main = "")
+```
+
+For a given neighborhood $i$, the spatial weight of a neighborhood $j$, such that $j \neq i$, is non-zero if and only if neighborhoods $i$ and $j$ are adjacent. Adjacent neighborhoods indicated by connected nodes in Figure \@ref(fig:spatialmap). The exact non-zero spatial weight is determined by the distance between the two neighborhoods, measured from there centers. These distances are depicted by the lengths of the edges in Figure \@ref(fig:spatialmap).
+
+\newpage
+
+```{r autoreg, fig.cap = "Spatial Autoregression Results", echo = FALSE, fig.pos='H'}
+# Create a list of spatial auto-regression models
+models_auto = list(
+  
+  "Income" = lagsarlm(
+    formula = trees_per_sq_km ~ median_after_tax_household_income, 
+    data = neighbourhood_reg,
+    listw = spatial_weights
+    ),
+  
+  "Income and Minority Status" = lagsarlm(
+    formula = trees_per_sq_km ~ ., 
+    data = neighbourhood_reg |> 
+      select(starts_with("vm"), trees_per_sq_km, median_after_tax_household_income),
+    listw = spatial_weights
+    ),
+  
+  "Full Model" = lagsarlm(
+    formula = trees_per_sq_km ~ . - code, 
+    data = neighbourhood_reg,
+    listw = spatial_weights
+    )
+)
+
+# Rename Variables for display
+coef_map <-
+  c(
+    "rho" = "Rho",
+    "median_after_tax_household_income" = "Median Household Income",
+    "average_household_size" = "Average Household Size",
+    "population_density_per_square_kilometre" = "Population Density",
+    "persons_living_alone_per_cent" = "Persons Living Alone (%)",
+    "prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent" =
+      "Low Income (%)",
+    "vm_black" = "Black",
+    "vm_chinese" = "Chinese",
+    "vm_japanese" = "Japanese",
+    "vm_arab" = "Arab",
+    "vm_south_asian" = "South Asian",
+    "vm_filipino" = "Filipino",
+    "vm_southeast_asian" = "Southest Asian",
+    "vm_west_asian" = "West Asian",
+    "vm_korean" = "Korean",
+    "vm_multiple_visible_minorities" = "Multiple Visible Minorities",
+    "vm_visible_minority_n_i_e" = "Other Visible Minority"
+  )
+
+# Create Panels for the regression table
+panel_rows <- tribble(
+  ~term, ~income_and_controls, ~income_and_minority, ~all_controls,
+  "\\bf{Demographic Controls}", "", "", "",
+  "", "", "", "",
+  "\\bf{Visible Minority Population (\\%)}", "", "", "",
+  "", "", "", ""
+)
+attr(panel_rows, 'position') <- c(3, 4, 15, 16)
+
+# Create notes for the regression table
+notes <- c("Note: Rho is the coefficient on the spatially lagged outcome (neighbourhood street trees per square kilometer) terms. Median Household Income is measured in thousands of dollars. Population density is measured in neighbourhood population per square kilometer. The reference group for the percent population in each visible minority group is the percent of the population that does not identify as a visible minority. Coefficients on visible minority variables represent the effect of the given visible minority population increasing and the non-visible minority population neccisarily falling (all other visible minority populations remaining fixed). Estimate standard errors appear in parentheses.", "*p<0.1; **p<0.05: ***p<0.01.")
+
+# Create regression table
+modelsummary(models_auto,
+             fmt = "%.3f",
+             estimate="{estimate}{stars}",
+             statistic = "({std.error})",
+             coef_map = coef_map,
+             gof_omit = 'dat$|Std. Errors|FE|Deviance|AIC|BIC|Log.Lik',
+             stars =  c('*' = .1, '**' = .05,'***' = 0.01),
+             add_rows = panel_rows,
+             notes = notes,
+             threeparttable = TRUE,
+             title = "Spatial Autoregression Results"
+             ) |>
+  # Set Table Width
+  column_spec(1, width = "20em") |>
+  column_spec(2:4, width = "7em") |>
+  # Set Font Size and Table Position
+  kable_styling(font_size = 8)
+```
+
+\newpage
+
+```{r, include = FALSE}
+# Estimate full model
+full_model = 
+  lagsarlm(
+    formula = trees_per_sq_km ~ . - code,
+    data = neighbourhood_reg,
+    listw = spatial_weights
+    )
+```
+
+
+```{r autoperformance, fig.cap = "Multiple Linear Regression Assumptions of Spatial Autoregressive Specification (8)", echo = FALSE, fig.height = 8, fig.width = 4, fig.pos='H'}
+# Check Normality Assumptions of Specification (6)
+res <- data.frame(full_model$residuals)
+names(res) <- "residuals"
+
+# Normal Density Plot
+density_plot <-
+  ggplot(aes(x = residuals), data = res) +
+  geom_density(fill = "#1b6ca8", colour = NA, alpha = 0.2) +
+  stat_function(
+    fun = dnorm, args = list(mean = mean(res$residuals), sd = sd(res$residuals)), col = "#3aaf85", size = 1
+    ) +
+  labs(
+    title = "Normality of Residuals",
+    subtitle = "Distribution should be close to the normal curve",
+    x = "Residuals",
+    y = "Density"
+  ) +
+  see::theme_lucid()
+
+# QQ Plot
+qq_plot <-
+  ggplot(aes(sample = residuals), data = res) +
+  geom_qq_line(colour = "#3aaf85", size = 1) +
+  geom_qq(colour = "#1b6ca8") +
+  labs(
+    title = "Normality of Residuals",
+    subtitle = "Dots should fall along the line",
+    x = "Standard Normal Distribution Quantiles",
+    y = "Sample Quantiles"
+  ) +
+  see::theme_lucid()
+
+# Arrange Plots
+grid.arrange(density_plot, qq_plot, ncol = 1, nrow = 2, widths = 4, heights = c(4, 4))
+```
+
+\newpage
+
+```{r impacts, fig.cap = "Specification (8) Covariate Impacts", echo = FALSE, fig.pos='H'}
+# Estimate Covariate Impact ----------------------------------------------------
+
+# Get model impacts
+full_model_impacts <- impacts(full_model, listw = spatial_weights)
+
+# Full model impacts
+full_dir <- full_model_impacts$direct
+full_indir <- full_model_impacts$indirect
+full_total <- full_model_impacts$total
+
+# Order of Variables given by impacts
+vars <- 
+  c(
+    "population_density_per_square_kilometre",
+    "average_household_size",                                                           
+    "persons_living_alone_per_cent",                                                    
+    "prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent", 
+    "vm_chinese",                                                                       
+    "vm_south_asian",                                                                  
+    "vm_black",
+    "vm_latin_american",
+    "vm_filipino",                                                                       
+    "vm_arab",                                                                           
+    "vm_southeast_asian",                                                                
+    "vm_west_asian",                                                                      
+    "vm_korean",                                                                         
+    "vm_japanese",                                                                        
+    "vm_visible_minority_n_i_e",                                                          
+    "vm_multiple_visible_minorities",                                                    
+    "median_after_tax_household_income"
+    )
+
+# Create table
+full_model_impacts_table <-
+  tibble(
+    "Variables" = vars,
+    "Direct Impacts" = round(full_model_impacts$direct, 3),
+    "Indirect Impacts" = round(full_model_impacts$indirect, 3),
+    "Total Impacts" = round(full_model_impacts$total, 3)
+  )
+
+# Rename variables for display
+full_model_impacts_table$Variables <- 
+  recode(full_model_impacts_table$Variables,
+    median_after_tax_household_income = "Median Household Income",
+    vm_black = "Black",
+    vm_latin_american = "Latin American",
+    vm_chinese = "Chinese",
+    vm_japanese = "Japanese",
+    vm_arab = "Arab",
+    vm_south_asian = "South Asian",
+    vm_filipino = "Filipino",
+    vm_southeast_asian = "Southest Asian",
+    vm_west_asian = "West Asian",
+    vm_korean = "Korean",
+    vm_multiple_visible_minorities = "Multiple",
+    vm_visible_minority_n_i_e = "Other",
+    average_household_size = "Average Household Size",
+    population_density_per_square_kilometre = "Population Density",
+    persons_living_alone_per_cent = "Persons Living Alone (%)",
+    prevalence_of_low_income_based_on_the_low_income_measure_after_tax_lim_at_percent =
+      "Low Income (%)"
+    )
+
+# Display Table
+full_model_impacts_table |> 
+  as_tibble() |> 
+  kable(booktabs = T, linesep = "", caption = "Specification (8) Covariate Impacts") |> 
+  kable_styling(font_size = 10, latex_options = "HOLD_position") |>
+  footnote("Direct impacts report the average partial effect of each covariate on neighborhood street tree density. Indirect impacts measure the effects of covariate changes in all other neighborhoods on each individual neighborhood. Total impacts are the sum of Direct and Indirect impacts.", threeparttable = TRUE)
+```
+
+\newpage
+
+# References
+
